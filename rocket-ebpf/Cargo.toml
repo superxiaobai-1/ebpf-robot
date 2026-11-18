@@ -1,0 +1,54 @@
+[package]
+name = "rocket-ebpf"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rocket-ebpf-common = { path = "../rocket-ebpf-common" }
+
+anyhow = { workspace = true, default-features = true }
+aya = { workspace = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"], optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+cpp_demangle = "0.4"
+clap = { workspace = true }
+object = { version = "0.36", default-features = false, features = [
+    "elf",
+    "read_core",
+    "std",
+] }
+aya-log = { workspace = true }
+env_logger = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "signal",
+    "time",
+] }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+
+[build-dependencies]
+anyhow = { workspace = true }
+aya-build = { workspace = true }
+cargo_metadata = { workspace = true }
+rocket-ebpf-ebpf = { path = "../rocket-ebpf-ebpf" }
+
+[dev-dependencies]
+libc = { workspace = true }
+
+[features]
+default = ["web"]
+web = ["dep:axum", "dep:tokio-stream", "dep:serde", "dep:serde_json"]
+# Pass the audited Jetson AGX Orin R36.4.4 PREEMPT_RT tracepoint layout to the
+# embedded eBPF crate. Build the Orin binary with `--features orin-r36-rt`.
+orin-r36-rt = []
+
+[[bin]]
+name = "rocket-ebpf"
+path = "src/main.rs"

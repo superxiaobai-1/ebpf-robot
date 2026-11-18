@@ -1,0 +1,23 @@
+[package]
+name = "rocket-ebpf-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+rocket-ebpf-common = { path = "../rocket-ebpf-common" }
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[features]
+default = []
+# NVIDIA Jetson AGX Orin, L4T R36.4.4, 5.15.148-rt-tegra.
+# This is deliberately explicit: the tracepoint layout is kernel/configuration
+# specific and must not be treated as a generic aarch64 layout.
+orin-r36-rt = []
+
+[[bin]]
+name = "rocket-ebpf"
+path = "src/main.rs"
