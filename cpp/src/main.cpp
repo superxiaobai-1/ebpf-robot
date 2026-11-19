@@ -67,6 +67,7 @@ static std::string error_string(int error)
     return std::strerror(error);
 }
 
+#ifndef ROCKET_EMBEDDED_BPF
 static fs::path executable_dir()
 {
     std::vector<char> buffer(4096);
@@ -77,12 +78,15 @@ static fs::path executable_dir()
     return fs::path(buffer.data()).parent_path();
 }
 
-static fs::path bpf_object_path()
-{
-    if (const char *value = std::getenv("ROCKET_EBPF_BPF_OBJECT"))
-        return value;
-    return executable_dir() / "rocket_ebpf.bpf.o";
+static fs::path bpf_object_path() { return executable_dir() / "rocket_ebpf.bpf.o"; }
+#endif
+
+#ifdef ROCKET_EMBEDDED_BPF
+extern "C" {
+extern const unsigned char _binary_rocket_ebpf_bpf_o_start[];
+extern const unsigned char _binary_rocket_ebpf_bpf_o_end[];
 }
+#endif
 
 struct ObjectDeleter {
     void operator()(bpf_object *object) const
@@ -115,11 +119,27 @@ class LoadedBpf {
 public:
     explicit LoadedBpf(const std::set<std::string> &program_names)
     {
-        const fs::path path = bpf_object_path();
-        bpf_object *raw = bpf_object__open_file(path.c_str(), nullptr);
+        bpf_object *raw = nullptr;
+        std::string source;
+        if (const char *override_path = std::getenv("ROCKET_EBPF_BPF_OBJECT")) {
+            source = override_path;
+            raw = bpf_object__open_file(override_path, nullptr);
+        } else {
+#ifdef ROCKET_EMBEDDED_BPF
+            const auto *begin = _binary_rocket_ebpf_bpf_o_start;
+            const auto *end = _binary_rocket_ebpf_bpf_o_end;
+            const std::size_t size = static_cast<std::size_t>(end - begin);
+            source = "embedded rocket_ebpf.bpf.o (" + std::to_string(size) + " bytes)";
+            raw = bpf_object__open_mem(begin, size, nullptr);
+#else
+            const fs::path path = bpf_object_path();
+            source = path.string();
+            raw = bpf_object__open_file(path.c_str(), nullptr);
+#endif
+        }
         const long open_error = libbpf_get_error(raw);
         if (open_error)
-            fail("打开 eBPF 对象失败: " + path.string() + ": " +
+            fail("打开 eBPF 对象失败: " + source + ": " +
                  error_string(static_cast<int>(open_error)));
         object_.reset(raw);
 

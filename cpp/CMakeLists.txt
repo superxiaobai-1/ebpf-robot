@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(ROCKET_SINGLE_FILE
+       "Embed the BPF object and statically link the libbpf/libelf compression stack"
+       OFF)
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf)
 pkg_check_modules(LIBELF REQUIRED IMPORTED_TARGET libelf)
@@ -45,11 +49,66 @@ add_custom_command(
     VERBATIM)
 add_custom_target(rocket_ebpf_bpf ALL DEPENDS ${BPF_OBJECT})
 
-add_executable(rocket-ebpf-cpp src/main.cpp)
+set(ROCKET_USER_SOURCES src/main.cpp)
+if(ROCKET_SINGLE_FILE)
+    # Turn the BPF ELF into a native relocatable object.  GNU ld exposes the
+    # bytes through _binary_rocket_ebpf_bpf_o_{start,end}; main.cpp then feeds
+    # those bytes directly to bpf_object__open_mem().  The .bpf.o remains only
+    # an intermediate build artifact and is not needed at runtime.
+    set(BPF_EMBED_OBJECT ${CMAKE_CURRENT_BINARY_DIR}/rocket_ebpf_embed.o)
+    add_custom_command(
+        OUTPUT ${BPF_EMBED_OBJECT}
+        COMMAND ${CMAKE_LINKER} -r -b binary
+                rocket_ebpf.bpf.o -o ${BPF_EMBED_OBJECT}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS ${BPF_OBJECT}
+        VERBATIM)
+    set_source_files_properties(${BPF_EMBED_OBJECT}
+                                PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+    list(APPEND ROCKET_USER_SOURCES ${BPF_EMBED_OBJECT})
+endif()
+
+add_executable(rocket-ebpf-cpp ${ROCKET_USER_SOURCES})
 add_dependencies(rocket-ebpf-cpp rocket_ebpf_bpf)
-target_include_directories(rocket-ebpf-cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(rocket-ebpf-cpp PRIVATE PkgConfig::LIBBPF PkgConfig::LIBELF)
+target_include_directories(
+    rocket-ebpf-cpp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${LIBBPF_INCLUDE_DIRS}
+    ${LIBELF_INCLUDE_DIRS})
 target_compile_options(rocket-ebpf-cpp PRIVATE -Wall -Wextra -Wpedantic)
 
+if(ROCKET_SINGLE_FILE)
+    target_compile_definitions(rocket-ebpf-cpp PRIVATE ROCKET_EMBEDDED_BPF=1)
+
+    # pkg-config knows the compression libraries required by the particular
+    # libelf/libbpf build on this system.  Put only that dependency closure in
+    # a static link region; C++ runtime and glibc stay dynamic.
+    execute_process(
+        COMMAND ${PKG_CONFIG_EXECUTABLE} --libs --static libbpf libelf
+        OUTPUT_VARIABLE ROCKET_STATIC_LIB_FLAGS_RAW
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ERROR_IS_FATAL ANY)
+    separate_arguments(ROCKET_STATIC_LIB_FLAGS NATIVE_COMMAND
+                       "${ROCKET_STATIC_LIB_FLAGS_RAW}")
+    list(FILTER ROCKET_STATIC_LIB_FLAGS EXCLUDE REGEX "^-pthread$")
+
+    find_package(Threads REQUIRED)
+    target_link_libraries(
+        rocket-ebpf-cpp PRIVATE
+        -Wl,-Bstatic
+        ${ROCKET_STATIC_LIB_FLAGS}
+        -Wl,-Bdynamic
+        Threads::Threads
+        ${CMAKE_DL_LIBS})
+    # Binary input objects do not carry a GNU-stack note.  Explicitly keep the
+    # final process stack non-executable.
+    target_link_options(rocket-ebpf-cpp PRIVATE -Wl,-z,noexecstack)
+else()
+    target_link_libraries(rocket-ebpf-cpp PRIVATE
+                          PkgConfig::LIBBPF PkgConfig::LIBELF)
+endif()
+
 install(TARGETS rocket-ebpf-cpp RUNTIME DESTINATION bin)
-install(FILES ${BPF_OBJECT} DESTINATION bin)
+if(NOT ROCKET_SINGLE_FILE)
+    install(FILES ${BPF_OBJECT} DESTINATION bin)
+endif()
